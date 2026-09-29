@@ -1,0 +1,16 @@
+Attack,Defense,FinalAccuracy,FinalLoss,AttackSuccessRate
+honest,FedAvg,1.0,0.00654934998601675,0.0
+honest,Krum,0.903,0.33776472926139833,0.0
+honest,FoolsGold,1.0,0.007667791053652763,0.0
+noise,FedAvg,0.095,,0.0
+noise,Krum,0.897,0.6272529892921448,0.0
+noise,FoolsGold,0.095,,0.0
+sign_flip,FedAvg,0.461,1.9651534509658815,0.0
+sign_flip,Krum,0.897,0.6272529892921448,0.0
+sign_flip,FoolsGold,1.0,0.04499358549714089,0.0
+label_flip,FedAvg,0.999,0.048657271295785905,0.010638297872340425
+label_flip,Krum,0.897,0.6272529892921448,0.0
+label_flip,FoolsGold,0.906,0.21785155308246612,1.0
+adaptive,FedAvg,1.0,0.1373632677793503,0.0
+adaptive,Krum,0.789,0.850166169166565,0.0
+adaptive,FoolsGold,1.0,0.08029469072818757,0.0
