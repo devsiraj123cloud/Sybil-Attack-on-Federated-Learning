@@ -13,7 +13,8 @@ from models.networks import get_model
 
 from data.federated_dataset import get_federated_datasets, get_synthetic_federated_datasets
 from defenses.aggregators import (
-    FedAvg, CoordinateWiseMedian, TrimmedMean, Krum, MultiKrum, Bulyan, FoolsGold
+    FedAvg, CoordinateWiseMedian, TrimmedMean, Krum, MultiKrum, Bulyan, FoolsGold,
+    FLTrust, ProofOfTrust, RFA, get_aggregator
 )
 from attacks.sybil_attacks import SybilAttackEngine
 from federated.client import FederatedClient
@@ -40,47 +41,27 @@ def create_fl_environment(
 
     total_clients = num_honest + num_sybil
 
-    # Load datasets
-    if dataset_name == "synthetic":
-        client_datasets, test_dataset = get_synthetic_federated_datasets(
-            num_clients=total_clients,
-            non_iid=True,
-            dirichlet_alpha=0.5,
-            seed=seed,
-            num_train=3000,
-            num_test=1000
-        )
-    else:
-        client_datasets, test_dataset = get_federated_datasets(
-            dataset_name=dataset_name,
-            num_clients=total_clients,
-            non_iid=True,
-            dirichlet_alpha=0.5,
-            seed=seed,
-            max_samples_per_client=max_samples_per_client
-        )
+    if dataset_name.lower() in ["fraud", "creditcard", "crypto_fraud"]:
+        if model_name in ["mlp", "cnn"]:
+            model_name = "fraud"
+        if label_flip_target == (7, 1):
+            label_flip_target = (1, 0)
 
+    # Load datasets with server root support for FLTrust
+    client_datasets, test_dataset, server_root_dataset = get_federated_datasets(
+        dataset_name=dataset_name,
+        num_clients=total_clients,
+        non_iid=True,
+        dirichlet_alpha=0.5,
+        seed=seed,
+        max_samples_per_client=max_samples_per_client,
+        return_server_root=True
+    )
 
     template_model = get_model(model_name, device=device)
 
-    # Instantiate defense aggregator
-    def_name = defense_name.lower().replace("-", "").replace("_", "")
-    if def_name == "fedavg":
-        defense = FedAvg()
-    elif def_name in ["median", "coordinatemedian"]:
-        defense = CoordinateWiseMedian()
-    elif def_name == "trimmedmean":
-        defense = TrimmedMean(beta=0.2)
-    elif def_name == "krum":
-        defense = Krum(num_byzantine=max(1, num_sybil))
-    elif def_name == "multikrum":
-        defense = MultiKrum(num_byzantine=max(1, num_sybil), to_average=max(1, total_clients - num_sybil))
-    elif def_name == "bulyan":
-        defense = Bulyan(num_byzantine=max(1, num_sybil))
-    elif def_name == "foolsgold":
-        defense = FoolsGold()
-    else:
-        raise ValueError(f"Unknown defense: {defense_name}")
+    # Instantiate defense aggregator using flexible factory
+    defense = get_aggregator(defense_name, num_byzantine=max(1, num_sybil))
 
     # Instantiate attack engine
     attack_engine = SybilAttackEngine(
@@ -88,7 +69,8 @@ def create_fl_environment(
         scale=3.0,
         noise_scale=5.0,
         jitter_scale=0.3,
-        lambda_step=1.2
+        lambda_step=1.2,
+        total_clients=total_clients
     )
 
     # Build clients
@@ -102,7 +84,8 @@ def create_fl_environment(
             batch_size=batch_size,
             local_epochs=local_epochs,
             learning_rate=lr,
-            is_sybil=False
+            is_sybil=False,
+            attack_type="none"
         )
         clients.append(client)
 
@@ -117,7 +100,8 @@ def create_fl_environment(
             local_epochs=local_epochs,
             learning_rate=lr,
             is_sybil=True,
-            label_flip_target=label_flip_target if attack_type == "label_flip" else None
+            label_flip_target=label_flip_target,
+            attack_type=attack_type
         )
         clients.append(client)
 
@@ -125,6 +109,7 @@ def create_fl_environment(
     server = FederatedServer(
         model_template=template_model,
         test_dataset=test_dataset,
+        server_root_dataset=server_root_dataset,
         defense=defense,
         attack_engine=attack_engine,
         device=device,
@@ -141,7 +126,7 @@ def run_experiment_1_defenses(rounds=15, dataset_name="synthetic", model_name="m
     print(">> RUNNING EXPERIMENT 1: DEFENSE EVALUATION UNDER ADAPTIVE SYBIL ATTACK")
     print("="*70)
 
-    defenses = ["FedAvg", "CoordinateMedian", "TrimmedMean", "Krum", "MultiKrum", "FoolsGold"]
+    defenses = ["FedAvg", "CoordinateMedian", "TrimmedMean", "Krum", "MultiKrum", "Bulyan", "FoolsGold", "ProofOfTrust", "FLTrust"]
     results = {}
 
     all_round_data = []
@@ -162,7 +147,8 @@ def run_experiment_1_defenses(rounds=15, dataset_name="synthetic", model_name="m
         elapsed = time.time() - t0
         final_acc = history["accuracy"][-1]
         final_loss = history["loss"][-1]
-        print(f"    Completed in {elapsed:.2f}s | Final Acc: {final_acc*100:.2f}% | Final Loss: {final_loss:.4f}")
+        final_recall = history["fraud_recall"][-1] if len(history["fraud_recall"]) > 0 else 0.0
+        print(f"    Completed in {elapsed:.2f}s | Final Acc: {final_acc*100:.2f}% | Fraud Recall: {final_recall*100:.1f}% | Loss: {final_loss:.4f}")
 
         results[d_name] = {
             "rounds": history["round"],
@@ -188,7 +174,7 @@ def run_experiment_1_defenses(rounds=15, dataset_name="synthetic", model_name="m
 
     return results
 
-def run_experiment_2_sybil_scaling(rounds=12, dataset_name="synthetic", model_name="mlp", output_dir="./results"):
+def run_experiment_2_sybil_scaling(rounds=10, dataset_name="fraud", model_name="fraud", output_dir="./results"):
     """
     Experiment 2: Effect of increasing Sybil client count (0 to 5 Sybils with 10 honest clients).
     """
@@ -197,7 +183,7 @@ def run_experiment_2_sybil_scaling(rounds=12, dataset_name="synthetic", model_na
     print("="*70)
 
     sybil_counts = [0, 1, 2, 3, 4, 5] # 0% to 33.3%
-    defenses = ["FedAvg", "TrimmedMean", "Krum", "FoolsGold"]
+    defenses = ["FedAvg", "TrimmedMean", "Krum", "FoolsGold", "ProofOfTrust", "FLTrust"]
     scaling_data = []
 
     for num_sybils in sybil_counts:
@@ -232,16 +218,16 @@ def run_experiment_2_sybil_scaling(rounds=12, dataset_name="synthetic", model_na
     df.to_csv(os.path.join(output_dir, "exp2_sybil_scaling.csv"), index=False)
     return df
 
-def run_experiment_3_attacks_comparison(rounds=12, dataset_name="synthetic", model_name="mlp", output_dir="./results"):
+def run_experiment_3_attacks_comparison(rounds=10, dataset_name="fraud", model_name="fraud", output_dir="./results"):
     """
-    Experiment 3: Comparison of different Sybil attack strategies against FedAvg vs FoolsGold.
+    Experiment 3: Comparison of different Sybil attack strategies against FedAvg vs FoolsGold vs FLTrust.
     """
     print("\n" + "="*70)
     print(">> RUNNING EXPERIMENT 3: ATTACK STRATEGIES COMPARISON")
     print("="*70)
 
-    attack_types = ["honest", "noise", "sign_flip", "label_flip", "adaptive"]
-    test_defenses = ["FedAvg", "Krum", "FoolsGold"]
+    attack_types = ["honest", "noise", "sign_flip", "fraud_evasion", "dba", "adaptive"]
+    test_defenses = ["FedAvg", "Krum", "FoolsGold", "ProofOfTrust", "FLTrust"]
     attack_data = []
 
     for atk in attack_types:

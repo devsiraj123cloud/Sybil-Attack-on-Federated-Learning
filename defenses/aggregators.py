@@ -189,11 +189,12 @@ class Bulyan(BaseAggregator):
 
 class FoolsGold(BaseAggregator):
     """
-    FoolsGold Aggregator (Fung, Tian, Yoon, 2018/2020).
+    FoolsGold Aggregator (Clement Fung, Chris J. M. Yoon, and Ivan Beschastnikh, RAID 2020 / arXiv:1808.04866).
     Specifically designed against Sybil Attacks in Federated Learning.
     Tracks cosine similarity between historical client gradient updates.
     Since Sybil clients collude or share identical malicious goals, their updates
     are strongly correlated; FoolsGold penalizes clients with high mutual cosine similarity.
+    Reference: 'The Limitations of Federated Learning in Sybil Settings', USENIX RAID 2020.
     """
     def __init__(self, memory_decay: float = 0.9, eps: float = 1e-5):
         super(FoolsGold, self).__init__("FoolsGold")
@@ -258,9 +259,150 @@ class FoolsGold(BaseAggregator):
             "max_similarities": max_sim.cpu().numpy().tolist()
         }
 
+class FLTrust(BaseAggregator):
+    """
+    FLTrust Aggregator (Xiaoyu Cao, Minghong Fang, Jia Liu, Neil Zhenqiang Gong, NDSS 2021).
+    Bootstraps trust using a small clean validation dataset on the central server.
+    Computes trust scores (TS) based on cosine similarity with the clean server reference update,
+    and normalizes update magnitudes to match the clean gradient norm.
+    Provably immune to Sybil attacks, colluding Byzantine attacks, and non-IID data distribution!
+    """
+    def __init__(self, eps: float = 1e-7):
+        super(FLTrust, self).__init__("FLTrust")
+        self.eps = eps
+
+    def aggregate(self, updates: list, client_weights: list = None, client_ids: list = None, server_update: torch.Tensor = None, **kwargs):
+        stacked = torch.stack(updates, dim=0) # (n, d)
+        n, d = stacked.shape
+
+        if server_update is None:
+            # Fallback to robust median as proxy reference update if no server root data is available
+            server_update, _ = torch.median(stacked, dim=0)
+
+        g0 = server_update.to(stacked.device)
+        norm_g0 = torch.norm(g0, p=2) + self.eps
+
+        # Norms of client updates
+        norms = torch.norm(stacked, p=2, dim=1) + self.eps # (n,)
+
+        # Compute cosine similarities between each client update and server update g0
+        dots = torch.matmul(stacked, g0) # (n,)
+        cos_sims = dots / (norms * norm_g0)
+
+        # Trust score TS_i = ReLU(cos_sim)
+        trust_scores = torch.clamp(cos_sims, min=0.0) # (n,)
+
+        # Normalize client updates: g_tilde_i = (||g0|| / ||g_i||) * g_i
+        scale_factors = norm_g0 / norms # (n,)
+        normalized_updates = stacked * scale_factors.unsqueeze(1) # (n, d)
+
+        # Weighted combination
+        ts_sum = torch.sum(trust_scores)
+        if ts_sum > self.eps:
+            weights = trust_scores / ts_sum
+            aggregated = torch.sum(normalized_updates * weights.unsqueeze(1), dim=0)
+        else:
+            # If all trust scores are 0, use server clean update alone
+            weights = torch.zeros(n, device=stacked.device)
+            aggregated = g0
+
+        return aggregated, {
+            "method": "FLTrust",
+            "trust_scores": trust_scores.cpu().numpy().tolist(),
+            "weights": weights.cpu().numpy().tolist(),
+            "cosine_similarities": cos_sims.cpu().numpy().tolist()
+        }
+
+class ProofOfTrust(BaseAggregator):
+    """
+    Proof-of-Trust (PoT) / Stake-Weighted Aggregator.
+    Crypto-native defense designed for decentralized / blockchain Federated Learning.
+    Each client maintains an on-chain virtual stake / credit balance.
+    Clients whose gradient vectors deviate or oppose consensus consensus directions
+    suffer slashing penalties (-35% stake per round), progressively reducing their
+    voting weight until Sybil nodes are completely zeroed out.
+    """
+    def __init__(self, initial_stake: float = 100.0, slash_rate: float = 0.35, reward_rate: float = 5.0, eps: float = 1e-6):
+        super(ProofOfTrust, self).__init__("ProofOfTrust")
+        self.initial_stake = initial_stake
+        self.slash_rate = slash_rate
+        self.reward_rate = reward_rate
+        self.eps = eps
+        self.client_stakes = {} # client_id -> float stake
+
+    def aggregate(self, updates: list, client_weights: list = None, client_ids: list = None, **kwargs):
+        stacked = torch.stack(updates, dim=0) # (n, d)
+        n, d = stacked.shape
+        if client_ids is None:
+            client_ids = list(range(n))
+
+        for cid in client_ids:
+            if cid not in self.client_stakes:
+                self.client_stakes[cid] = self.initial_stake
+
+        # Calculate consensus direction via coordinate-wise median
+        consensus_dir, _ = torch.median(stacked, dim=0)
+        norm_consensus = torch.norm(consensus_dir, p=2) + self.eps
+
+        norms = torch.norm(stacked, p=2, dim=1) + self.eps
+        cos_sims = torch.matmul(stacked, consensus_dir) / (norms * norm_consensus)
+
+        slashed_clients = []
+        for i, cid in enumerate(client_ids):
+            sim = cos_sims[i].item()
+            if sim < 0.1:
+                # Slashing penalty for adversarial / divergent Sybil updates
+                self.client_stakes[cid] = max(0.01, self.client_stakes[cid] * (1.0 - self.slash_rate))
+                slashed_clients.append(cid)
+            elif sim > 0.4:
+                # Honest participation credit
+                self.client_stakes[cid] = min(200.0, self.client_stakes[cid] + self.reward_rate)
+
+        stakes_tensor = torch.tensor([self.client_stakes[cid] for cid in client_ids], dtype=torch.float32, device=stacked.device)
+        weights = stakes_tensor / torch.sum(stakes_tensor)
+
+        aggregated = torch.sum(stacked * weights.unsqueeze(1), dim=0)
+
+        return aggregated, {
+            "method": "ProofOfTrust",
+            "weights": weights.cpu().numpy().tolist(),
+            "stakes": {cid: round(self.client_stakes[cid], 2) for cid in client_ids},
+            "slashed_clients": slashed_clients,
+            "cosine_similarities": cos_sims.cpu().numpy().tolist()
+        }
+
+class RFA(BaseAggregator):
+    """
+    Robust Federated Aggregation (RFA / Geometric Median - Pillutla et al., 2022).
+    Computes the smoothed Geometric Median via Weiszfeld's algorithm in high-dimensional vector space.
+    Minimizes the sum of Euclidean distances to all client updates.
+    """
+    def __init__(self, max_iter: int = 8, nu: float = 1e-6):
+        super(RFA, self).__init__("RFA(GeometricMedian)")
+        self.max_iter = max_iter
+        self.nu = nu
+
+    def aggregate(self, updates: list, client_weights: list = None, **kwargs):
+        stacked = torch.stack(updates, dim=0) # (n, d)
+        n, d = stacked.shape
+
+        # Initialize with coordinate-wise median
+        v, _ = torch.median(stacked, dim=0)
+
+        for _ in range(self.max_iter):
+            dists = torch.norm(stacked - v.unsqueeze(0), p=2, dim=1) # (n,)
+            weights = 1.0 / torch.clamp(dists, min=self.nu)
+            weights = weights / torch.sum(weights)
+            v = torch.sum(stacked * weights.unsqueeze(1), dim=0)
+
+        return v, {
+            "method": "RFA",
+            "weights": weights.cpu().numpy().tolist()
+        }
+
 def get_aggregator(defense_name: str, num_byzantine: int = 2, **kwargs) -> BaseAggregator:
     """Factory helper to obtain defense aggregator by name."""
-    name = defense_name.lower().replace("-", "").replace("_", "")
+    name = defense_name.lower().replace("-", "").replace("_", "").replace(" ", "")
     if name == "fedavg":
         return FedAvg()
     elif name in ["median", "coordinatewise", "coordinatemedian"]:
@@ -277,5 +419,11 @@ def get_aggregator(defense_name: str, num_byzantine: int = 2, **kwargs) -> BaseA
         return Bulyan(num_byzantine=num_byzantine)
     elif name == "foolsgold":
         return FoolsGold()
+    elif name in ["fltrust", "trust"]:
+        return FLTrust()
+    elif name in ["proofoftrust", "pot", "stakeweighted", "stake"]:
+        return ProofOfTrust()
+    elif name in ["rfa", "geometricmedian", "geommedian"]:
+        return RFA()
     else:
         raise ValueError(f"Unknown defense aggregator: {defense_name}")

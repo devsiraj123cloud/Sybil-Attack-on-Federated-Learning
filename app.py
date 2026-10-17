@@ -108,13 +108,13 @@ if app_mode == "🚀 Live FL Simulation":
         st.subheader("2. Defense Strategy")
         defense_choice = st.selectbox(
             "Aggregator Defense",
-            ["FedAvg", "CoordinateMedian", "TrimmedMean", "Krum", "MultiKrum", "Bulyan", "FoolsGold"],
-            index=6 # FoolsGold default
+            ["FLTrust", "ProofOfTrust", "FoolsGold", "MultiKrum", "Krum", "TrimmedMean", "CoordinateMedian", "FedAvg", "RFA"],
+            index=0 # FLTrust default
         )
         dataset_choice = st.selectbox(
             "Dataset",
-            ["synthetic", "mnist", "fashion_mnist"],
-            index=0
+            ["fraud", "crypto_fraud", "synthetic", "mnist", "fashion_mnist"],
+            index=0 # Real-world fraud default
         )
         rounds = st.slider("Communication Rounds", min_value=1, max_value=15, value=5, step=1)
 
@@ -122,7 +122,7 @@ if app_mode == "🚀 Live FL Simulation":
         st.subheader("3. Sybil Attack Vector")
         attack_type = st.selectbox(
             "Attack Strategy",
-            ["adaptive", "sign_flip", "noise", "model_scale", "label_flip", "honest"],
+            ["adaptive", "fraud_evasion", "dba", "sign_flip", "model_scale", "label_flip", "noise", "honest"],
             index=0
         )
         if attack_type == "adaptive":
@@ -130,7 +130,7 @@ if app_mode == "🚀 Live FL Simulation":
                                      help="Perturbation to bypass FoolsGold cosine similarity defense")
             lambda_step = st.slider("Malicious Step (Bounding)", 0.5, 3.0, 1.3, 0.1,
                                     help="Euclidean distance bounding to bypass Krum/TrimmedMean")
-        elif attack_type in ["sign_flip", "model_scale", "label_flip"]:
+        elif attack_type in ["sign_flip", "model_scale", "label_flip", "dba", "fraud_evasion"]:
             scale_val = st.slider("Attack Scale Factor", 1.0, 10.0, 3.0, 0.5)
         else:
             jitter_scale, lambda_step, scale_val = 0.35, 1.3, 3.0
@@ -191,24 +191,34 @@ if app_mode == "🚀 Live FL Simulation":
             acc = metrics["accuracy"] * 100
             loss = metrics["loss"]
             asr = metrics["attack_success_rate"] * 100
+            recall = metrics.get("fraud_recall", 0.0) * 100
+            is_fraud_ds = dataset_choice in ["fraud", "crypto_fraud"]
 
-            m_acc.metric("Global Test Accuracy", f"{acc:.2f}%")
+            m_acc.metric("Global Accuracy", f"{acc:.2f}%")
             m_loss.metric("Evaluation Loss", f"{loss:.4f}")
-            m_asr.metric("Attack Success Rate", f"{asr:.2f}%")
-            
-            is_poisoned = acc < 25.0 and r > 1 and num_sybil > 0
-            if is_poisoned:
-                m_stat.metric("System Health", "POISONED", delta="-Compromised", delta_color="inverse")
+            if is_fraud_ds:
+                m_asr.metric("Fraud Recall", f"{recall:.1f}%")
             else:
-                m_stat.metric("System Health", "CONVERGING", delta="+Normal", delta_color="normal")
+                m_asr.metric("Attack Success Rate", f"{asr:.2f}%")
+            
+            is_poisoned = (recall < 20.0 and r > 1 and num_sybil > 0) if is_fraud_ds else (acc < 25.0 and r > 1 and num_sybil > 0)
+            if is_poisoned:
+                m_stat.metric("Defense Status", "VULNERABLE / POISONED", delta="-Attack Succeeded", delta_color="inverse")
+            else:
+                m_stat.metric("Defense Status", "ROBUST / SECURE", delta="+Consensus Protected", delta_color="normal")
 
-            history_records.append({
+            rec = {
                 "Round": r,
                 "Accuracy (%)": acc,
                 "Loss": loss,
-                "ASR (%)": asr,
                 "Status": "POISONED" if is_poisoned else "OK"
-            })
+            }
+            if is_fraud_ds:
+                rec["Fraud Recall (%)"] = recall
+                rec["Fraud ASR (%)"] = metrics.get("fraud_asr", 0.0) * 100
+            else:
+                rec["ASR (%)"] = asr
+            history_records.append(rec)
 
             # Update charts
             df_hist = pd.DataFrame(history_records)

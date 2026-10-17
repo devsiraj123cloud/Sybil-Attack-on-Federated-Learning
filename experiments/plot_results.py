@@ -40,6 +40,7 @@ def plot_defenses_convergence(csv_path="./results/exp1_defenses_comparison.csv",
         "TrimmedMean": "#3498db",      # blue
         "Krum": "#9b59b6",             # purple
         "MultiKrum": "#1abc9c",        # teal
+        "Bulyan": "#e67e22",           # amber/orange (hybrid defense)
         "FoolsGold": "#2ecc71"         # green (robust Sybil defense)
     }
 

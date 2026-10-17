@@ -109,5 +109,54 @@ class SybilAttackEngine:
 
             return poisoned
 
+        elif self.attack_type in ["distributed_backdoor", "dba"]:
+            """
+            Distributed Backdoor Attack (DBA - Xie et al., ICLR 2020):
+            Decomposes global backdoor triggers across multiple Sybil agents.
+            Each Sybil modifies only a disjoint slice of model parameters / features,
+            preventing pairwise cosine detection (defeats FoolsGold) and staying within
+            normal distance bounds (defeats Krum).
+            """
+            poisoned = []
+            slice_size = dim // max(1, num_sybils)
+            target_scale = self.kwargs.get("scale", 2.5)
+
+            for i in range(num_sybils):
+                # Start with honest mean update
+                sybil_vec = mean_honest.clone()
+                start_idx = i * slice_size
+                end_idx = min(dim, (i + 1) * slice_size)
+
+                # Inject localized targeted backdoor perturbation in this Sybil's partition
+                sybil_vec[start_idx:end_idx] = -target_scale * sybil_vec[start_idx:end_idx]
+                poisoned.append(sybil_vec)
+
+            return poisoned
+
+        elif self.attack_type in ["fraud_evasion", "targeted_evasion"]:
+            """
+            Targeted Fraud Evasion Attack:
+            Sybils craft updates to suppress fraud detection sensitivity (label 1 -> 0),
+            allowing fraudulent transactions to bypass federated screening.
+            Bridges honest direction with fraud suppression vector.
+            """
+            target_dir = -mean_honest if target_direction is None else target_direction
+            scale = self.kwargs.get("scale", 3.0)
+            poisoned = []
+            for u in sybil_client_updates:
+                evasion_vec = u + scale * target_dir
+                poisoned.append(evasion_vec)
+            return poisoned
+
+        elif self.attack_type == "model_replacement":
+            """
+            Constrain-and-Scale Model Replacement (Bagdasaryan et al., AISTATS 2020):
+            Amplifies malicious updates by gamma = (total_clients / num_sybils)
+            to dominate and overwrite the global model in a single aggregation round.
+            """
+            total_clients = self.kwargs.get("total_clients", num_sybils * 3)
+            gamma = float(total_clients) / float(max(1, num_sybils))
+            return [gamma * u for u in sybil_client_updates]
+
         else:
             raise ValueError(f"Unknown attack type: {self.attack_type}")

@@ -48,12 +48,47 @@ class FederatedCNN(nn.Module):
         x = self.fc2(x)
         return x
 
-def get_model(model_name="cnn", device="cpu"):
+class FraudClassifier(nn.Module):
+    """
+    High-performance Deep Neural Network for Fraud & Anomaly Detection on Tabular Data.
+    Specifically designed for Financial & Crypto transaction fraud classification.
+    Uses LayerNorm and Dropout for robust convergence in non-IID Federated Learning.
+    Input: (B, 30)
+    Output: (B, 2) - [Normal, Fraudulent]
+    """
+    def __init__(self, input_dim=30, hidden_dim1=128, hidden_dim2=64, hidden_dim3=32, num_classes=2):
+        super(FraudClassifier, self).__init__()
+        self.fc1 = nn.Linear(input_dim, hidden_dim1)
+        self.ln1 = nn.LayerNorm(hidden_dim1)
+        self.fc2 = nn.Linear(hidden_dim1, hidden_dim2)
+        self.ln2 = nn.LayerNorm(hidden_dim2)
+        self.fc3 = nn.Linear(hidden_dim2, hidden_dim3)
+        self.fc4 = nn.Linear(hidden_dim3, num_classes)
+        self.dropout = nn.Dropout(0.2)
+
+    def forward(self, x):
+        if x.dim() > 2:
+            x = x.view(x.size(0), -1)
+        x = F.relu(self.ln1(self.fc1(x)))
+        x = self.dropout(x)
+        x = F.relu(self.ln2(self.fc2(x)))
+        x = self.dropout(x)
+        x = F.relu(self.fc3(x))
+        x = self.fc4(x)
+        return x
+
+def get_model(model_name="fraud", device="cpu", input_dim=30, num_classes=None):
     """Factory function to instantiate models."""
-    if model_name.lower() == "mlp":
-        model = FastMLP()
-    elif model_name.lower() == "cnn":
-        model = FederatedCNN()
+    name = model_name.lower()
+    if name in ["fraud", "creditcard", "crypto_fraud", "tabular"]:
+        classes = num_classes if num_classes is not None else 2
+        model = FraudClassifier(input_dim=input_dim, num_classes=classes)
+    elif name == "mlp":
+        classes = num_classes if num_classes is not None else 10
+        model = FastMLP(input_dim=input_dim if input_dim != 30 else 784, num_classes=classes)
+    elif name == "cnn":
+        classes = num_classes if num_classes is not None else 10
+        model = FederatedCNN(in_channels=1, num_classes=classes)
     else:
         raise ValueError(f"Unknown model architecture: {model_name}")
     return model.to(device)

@@ -19,7 +19,8 @@ class FederatedClient:
         local_epochs=2,
         learning_rate=0.01,
         is_sybil=False,
-        label_flip_target=None
+        label_flip_target=None,
+        attack_type="none"
     ):
         self.client_id = client_id
         self.dataset = dataset
@@ -30,6 +31,11 @@ class FederatedClient:
         self.learning_rate = learning_rate
         self.is_sybil = is_sybil
         self.label_flip_target = label_flip_target # tuple (source_class, target_class)
+        self.attack_type = attack_type.lower() if attack_type else "none"
+
+        # If attack_type is fraud_evasion and no label_flip_target specified, set (1, 0)
+        if self.is_sybil and self.attack_type in ["fraud_evasion", "targeted_evasion"] and self.label_flip_target is None:
+            self.label_flip_target = (1, 0)
 
         self.loader = DataLoader(
             self.dataset,
@@ -48,7 +54,10 @@ class FederatedClient:
         """
         vector_to_parameters(global_params, self.model)
         self.model.train()
-        criterion = nn.CrossEntropyLoss()
+        if getattr(self.model, "fc4", None) is not None and getattr(self.model.fc4, "out_features", None) == 2:
+            criterion = nn.CrossEntropyLoss(weight=torch.tensor([1.0, 15.0], device=self.device))
+        else:
+            criterion = nn.CrossEntropyLoss()
         optimizer = torch.optim.SGD(self.model.parameters(), lr=self.learning_rate, momentum=0.9)
 
         total_loss = 0.0
