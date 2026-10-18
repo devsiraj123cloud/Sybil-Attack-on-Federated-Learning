@@ -70,6 +70,9 @@ sybil/
 | **Multi-Krum** | Distance-based | $f < \frac{n - 2}{2}$ | Averages top-$m$ candidates with lowest Krum scores. |
 | **Bulyan** | Hybrid | $f < \frac{n - 3}{4}$ | Multi-Krum candidate filtering followed by coordinate-wise trimming. |
 | **FoolsGold** | Correlation-based | Arbitrary Sybil counts | Memory-decay cosine similarity tracking; penalizes correlated Sybils. |
+| **FLTrust** | Root-trust | Root-data dependent | Scores updates by cosine similarity to a trusted server-root update. |
+| **ProofOfTrust** | Stake-weighted | Stake dependent | Applies trust and stake weighting with slashing for suspicious updates. |
+| **RFA** | Geometric | Robust geometric center | Uses an iterative robust geometric median of client updates. |
 
 ---
 
@@ -106,6 +109,12 @@ python main.py --test
 # or with pytest:
 pytest test_suite.py
 ```
+
+The fraud dataset is downloaded from OpenML only when
+`data/raw/creditcard.pt` is not present. MNIST and Fashion-MNIST also require
+network access on their first run; dataset download failures are reported
+explicitly instead of silently switching to a different benchmark. The
+synthetic image generator uses 784 features (`1x28x28`) by design.
 
 ### 3. Quick CLI Demo
 

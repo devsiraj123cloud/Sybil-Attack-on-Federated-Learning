@@ -1,8 +1,18 @@
 import os
 import torch
 import numpy as np
-from torch.utils.data import Dataset, DataLoader, Subset
+from torch.utils.data import Dataset, Subset
 from torchvision import datasets, transforms
+
+def to_numpy_array(tensor):
+    """Safely convert a tensor or array to a numpy array without failing on numpy C-API mismatches."""
+    if isinstance(tensor, np.ndarray):
+        return tensor
+    try:
+        return tensor.detach().cpu().numpy()
+    except Exception:
+        return np.array(tensor.detach().cpu().tolist())
+
 
 class TensorDatasetWrapper(Dataset):
     """
@@ -76,8 +86,8 @@ def get_fraud_federated_datasets(
         }, pt_path)
         print(f"[Info] Saved {pt_path}")
 
-    fraud_indices = (all_y == 1).nonzero(as_tuple=True)[0].numpy()
-    normal_indices = (all_y == 0).nonzero(as_tuple=True)[0].numpy()
+    fraud_indices = to_numpy_array((all_y == 1).nonzero(as_tuple=True)[0])
+    normal_indices = to_numpy_array((all_y == 0).nonzero(as_tuple=True)[0])
 
     np.random.shuffle(fraud_indices)
     np.random.shuffle(normal_indices)
@@ -138,10 +148,11 @@ def get_fraud_federated_datasets(
         c_idx = client_indices[c]
         if max_samples_per_client is not None and len(c_idx) > max_samples_per_client:
             # Preserve fraud examples when trimming
-            c_y = all_y[c_idx].numpy()
+            c_y = to_numpy_array(all_y[c_idx])
             c_fraud = c_idx[c_y == 1]
             c_norm = c_idx[c_y == 0]
-            max_norm = max(1, max_samples_per_client - len(c_fraud))
+            c_fraud = c_fraud[:max_samples_per_client]
+            max_norm = max(0, max_samples_per_client - len(c_fraud))
             c_idx = np.concatenate([c_fraud, c_norm[:max_norm]])
             np.random.shuffle(c_idx)
 
@@ -161,6 +172,7 @@ def get_crypto_fraud_datasets(
     seed=42,
     num_samples=12000,
     num_features=30,
+    max_samples_per_client=None,
     return_server_root=False
 ):
     """
@@ -202,12 +214,12 @@ def get_crypto_fraud_datasets(
     train_client_idx = train_idx[100:]
     server_root_dataset = TensorDatasetWrapper(X[root_idx], y[root_idx])
 
-    train_labels = y[train_client_idx].numpy()
+    train_labels = to_numpy_array(y[train_client_idx])
     client_indices = [[] for _ in range(num_clients)]
 
     if not non_iid:
         splits = np.array_split(train_client_idx, num_clients)
-        client_splits = [train_client_idx[s] for s in splits]
+        client_splits = [s for s in splits]
     else:
         for k in [0, 1]:
             idx_k = train_client_idx[train_labels == k]
@@ -218,6 +230,12 @@ def get_crypto_fraud_datasets(
             for c in range(num_clients):
                 client_indices[c].extend(splits[c])
         client_splits = [np.array(idx, dtype=int) for idx in client_indices]
+
+    if max_samples_per_client is not None and max_samples_per_client > 0:
+        client_splits = [
+            split[:max_samples_per_client]
+            for split in client_splits
+        ]
 
     client_datasets = [TensorDatasetWrapper(X[s], y[s]) for s in client_splits]
 
@@ -235,11 +253,18 @@ def get_synthetic_federated_datasets(
     num_test=1000,
     num_features=784,
     num_classes=10,
+    max_samples_per_client=None,
     return_server_root=False
 ):
     """
     Generates synthetic prototype benchmark data mirroring image feature distributions.
     """
+    if num_features != 784:
+        raise ValueError(
+            "Synthetic image data requires num_features=784 so samples can be "
+            "reshaped to 1x28x28."
+        )
+
     rng = np.random.RandomState(seed)
     prototypes = rng.randn(num_classes, num_features).astype(np.float32)
 
@@ -260,7 +285,7 @@ def get_synthetic_federated_datasets(
     # Server root dataset (100 samples)
     root_dataset = TensorDatasetWrapper(X_train[:100], y_train[:100])
 
-    targets = y_train.numpy()
+    targets = to_numpy_array(y_train)
     if not non_iid:
         indices = rng.permutation(num_train)
         client_splits = np.array_split(indices, num_clients)
@@ -275,6 +300,12 @@ def get_synthetic_federated_datasets(
             for c in range(num_clients):
                 client_indices[c].extend(splits[c])
         client_splits = [np.array(idx, dtype=int) for idx in client_indices]
+
+    if max_samples_per_client is not None and max_samples_per_client > 0:
+        client_splits = [
+            split[:max_samples_per_client]
+            for split in client_splits
+        ]
 
     client_datasets = [Subset(train_dataset, split) for split in client_splits]
     if return_server_root:
@@ -321,6 +352,7 @@ def get_federated_datasets(
             seed=seed,
             return_server_root=return_server_root,
             **kwargs
+            **kwargs
         )
     elif d_name == "synthetic":
         return get_synthetic_federated_datasets(
@@ -340,8 +372,10 @@ def get_federated_datasets(
             train_dataset = datasets.MNIST(data_dir, train=True, download=True, transform=transform)
             test_dataset = datasets.MNIST(data_dir, train=False, download=True, transform=transform)
         except Exception as e:
-            print(f"[Warning] Failed to load MNIST: {e}. Falling back to synthetic.")
-            return get_synthetic_federated_datasets(num_clients, non_iid, dirichlet_alpha, seed, return_server_root=return_server_root)
+            raise RuntimeError(
+                f"Failed to load MNIST from {data_dir}. Check the dataset path "
+                "and network access, then retry."
+            ) from e
     elif d_name == "fashion_mnist":
         transform = transforms.Compose([
             transforms.ToTensor(),
@@ -351,8 +385,10 @@ def get_federated_datasets(
             train_dataset = datasets.FashionMNIST(data_dir, train=True, download=True, transform=transform)
             test_dataset = datasets.FashionMNIST(data_dir, train=False, download=True, transform=transform)
         except Exception as e:
-            print(f"[Warning] Failed to load FashionMNIST: {e}. Falling back to synthetic.")
-            return get_synthetic_federated_datasets(num_clients, non_iid, dirichlet_alpha, seed, return_server_root=return_server_root)
+            raise RuntimeError(
+                f"Failed to load Fashion-MNIST from {data_dir}. Check the dataset "
+                "path and network access, then retry."
+            ) from e
     else:
         raise ValueError(f"Unknown dataset: {dataset_name}")
 

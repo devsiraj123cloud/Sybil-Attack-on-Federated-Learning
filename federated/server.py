@@ -73,7 +73,10 @@ class FederatedServer:
             "fraud_asr": [],
             "round_duration": [],
             "defense_name": self.defense.name,
-            "metadata": []
+            "metadata": [],
+            "last_updates": [],
+            "last_client_ids": [],
+            "last_client_is_sybil": []
         }
 
     def compute_server_root_update(self, global_params: torch.Tensor, lr: float = 0.02) -> torch.Tensor:
@@ -243,6 +246,20 @@ class FederatedServer:
         # 5. Global parameter update
         new_params = global_params + self.server_lr * agg_update
         vector_to_parameters(new_params, self.global_model)
+
+        self.history["last_updates"] = [
+            update.detach().cpu().clone() for update in all_updates
+        ]
+        self.history["last_client_ids"] = list(all_ids)
+        self.history["last_client_is_sybil"] = [
+            client.is_sybil for client in clients
+        ]
+        meta = dict(meta)
+        meta["client_update_norms"] = [
+            float(torch.norm(update).item()) for update in all_updates
+        ]
+        meta["client_ids"] = list(all_ids)
+        meta["client_is_sybil"] = list(self.history["last_client_is_sybil"])
 
         round_duration = time.time() - start_t
 

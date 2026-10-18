@@ -26,10 +26,34 @@ from experiments.plot_results import (
     plot_attacks_comparison, plot_sybil_similarity_heatmap
 )
 
+DEFENSES = [
+    "FLTrust", "ProofOfTrust", "FoolsGold", "MultiKrum", "Krum",
+    "Bulyan", "TrimmedMean", "CoordinateMedian", "FedAvg", "RFA"
+]
+ATTACKS = [
+    "adaptive", "fraud_evasion", "dba", "sign_flip", "model_scale",
+    "label_flip", "noise", "honest"
+]
+
+@st.cache_data(show_spinner=False)
+def load_results_csv(path):
+    return pd.read_csv(path)
+
+def validate_configuration(defense, total_clients, num_sybil, dataset, attack):
+    if defense == "Bulyan" and total_clients < (4 * num_sybil + 3):
+        return f"Bulyan requires at least {4 * num_sybil + 3} clients for {num_sybil} Sybils."
+    if defense in {"Krum", "MultiKrum"} and total_clients <= num_sybil + 2:
+        return "Krum-based defenses need more clients than the Byzantine tolerance permits."
+    if defense == "FLTrust" and num_sybil >= total_clients:
+        return "FLTrust requires at least one honest client and a trusted root update."
+    if dataset == "synthetic" and attack == "fraud_evasion":
+        return "fraud_evasion is only meaningful for binary fraud datasets."
+    return None
+
 # Page configuration
 st.set_page_config(
-    page_title="Robust FL vs Adaptive Sybil Attacks",
-    page_icon="🛡️",
+    page_title="Federated Security Lab",
+    page_icon="◈",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -37,67 +61,72 @@ st.set_page_config(
 # Custom Styling
 st.markdown("""
 <style>
-    .main-title {
-        font-size: 2.2rem;
-        font-weight: 800;
-        color: #1E293B;
-        margin-bottom: 0.2rem;
-    }
-    .sub-title {
-        font-size: 1.05rem;
-        color: #64748B;
-        margin-bottom: 1.5rem;
-    }
-    .metric-card {
-        background-color: #F8FAFC;
-        border: 1px solid #E2E8F0;
-        border-radius: 8px;
-        padding: 16px;
-        text-align: center;
-    }
-    .badge-sybil {
-        background-color: #FEE2E2;
-        color: #991B1B;
-        padding: 4px 8px;
-        border-radius: 4px;
-        font-weight: 600;
-    }
-    .badge-honest {
-        background-color: #DCFCE7;
-        color: #166534;
-        padding: 4px 8px;
-        border-radius: 4px;
-        font-weight: 600;
-    }
+    @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap');
+    :root { --ink:#f4efff; --muted:#a99fbe; --line:#34264d; --paper:#100b1d; --green:#9b5cff; --lime:#f0a8ff; --blue:#c084fc; --cyan:#64d8ff; }
+    html, body, [class*="css"] { font-family:'Manrope',sans-serif; }
+    .stApp { background:radial-gradient(circle at 12% 0%, #32165a 0, transparent 28rem), radial-gradient(circle at 95% 12%, #172d52 0, transparent 30rem), var(--paper); color:var(--ink); }
+    [data-testid="stHeader"] { background:transparent; }
+    .block-container { max-width:1480px; padding-top:1.35rem; padding-bottom:4rem; }
+    .app-header { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:1rem 1.25rem; margin-bottom:1rem; background:rgba(19,13,35,.82); border:1px solid #4a2f70; border-radius:18px; box-shadow:0 12px 35px rgba(0,0,0,.28), 0 0 30px rgba(155,92,255,.08); }
+    .brand { display:flex; align-items:center; gap:.75rem; font-weight:800; letter-spacing:-.04em; font-size:1.25rem; }
+    .brand-mark { display:grid; place-items:center; width:2.35rem; height:2.35rem; border-radius:11px; background:linear-gradient(135deg,#8b35ff,#e35cff); color:#fff; font-size:1.25rem; box-shadow:0 0 20px rgba(183,77,255,.5); }
+    .header-status { display:flex; align-items:center; gap:.45rem; color:var(--muted); font-size:.78rem; font-family:'DM Mono',monospace; }
+    .status-dot { width:.5rem; height:.5rem; border-radius:50%; background:#6dffca; box-shadow:0 0 0 4px rgba(109,255,202,.12), 0 0 12px #6dffca; }
+    .section-label { color:var(--blue); font:600 .7rem 'DM Mono',monospace; letter-spacing:.12em; text-transform:uppercase; }
+    [data-testid="stRadio"] > div { gap:.45rem; }
+    [data-testid="stRadio"] label { background:rgba(23,15,39,.78); border:1px solid var(--line); border-radius:10px; padding:.35rem .7rem; }
+    .main-title { font-size:2rem; line-height:1.2; letter-spacing:-.055em; font-weight:800; color:var(--ink); margin-bottom:.35rem; }
+    .sub-title { font-size:.98rem; color:var(--muted); margin-bottom:1.6rem; }
+    h1,h2,h3 { letter-spacing:-.04em; color:var(--ink); }
+    h2 { font-size:1.25rem !important; }
+    h3 { font-size:1.05rem !important; }
+    [data-testid="stMetric"] { background:rgba(24,16,42,.88); border:1px solid #3b2858; border-radius:14px; padding:16px 18px; box-shadow:0 5px 18px rgba(0,0,0,.2), inset 0 1px rgba(255,255,255,.03); }
+    [data-testid="stMetricLabel"] { color:var(--muted); }
+    [data-testid="stMetricValue"] { font-family:'DM Mono',monospace; color:var(--ink); }
+    [data-testid="stTabs"] [role="tab"] { font-weight:600; }
+    [data-testid="stDataFrame"], [data-testid="stPlotlyChart"] { border-radius:12px; }
+    .stButton > button[kind="primary"] { background:linear-gradient(135deg,#793dff,#d946ef); border:1px solid #b15cff; border-radius:10px; font-weight:700; color:#fff; box-shadow:0 6px 20px rgba(168,74,255,.3); }
+    .stButton > button[kind="primary"]:hover { background:linear-gradient(135deg,#965cff,#ec5cff); border-color:#e18aff; }
+    [data-testid="stExpander"], [data-testid="stDataFrame"], [data-testid="stAlert"] { border-color:var(--line); }
+    [data-baseweb="tab-list"] { background:rgba(19,13,35,.65); border-radius:12px; padding:.25rem; }
+    code, .mono { font-family:'DM Mono',monospace; }
+    @media (max-width:700px) { .block-container { padding:1.2rem 1rem 3rem; } .main-title { font-size:1.65rem; } }
 </style>
 """, unsafe_allow_html=True)
 
-# Sidebar Navigation
-st.sidebar.image("https://raw.githubusercontent.com/feathericons/feather/master/icons/shield.svg", width=50)
-st.sidebar.title("Robust FL Benchmark")
-st.sidebar.caption("Adaptive Sybil Attacks & Defense Evaluation")
-
-app_mode = st.sidebar.radio(
-    "Navigation Mode",
-    [
-        "🚀 Live FL Simulation", 
-        "📊 Benchmark Plots & Analysis", 
-        "🛡️ Defense Algorithms Deep Dive",
-        "🦹 Sybil Attack Inspector"
-    ]
+# Single-page workspace navigation
+st.markdown(
+    '<div class="app-header"><div class="brand"><span class="brand-mark">◈</span><span>Federated Security Lab<br><small style="font-size:.68rem;color:#a99fbe;font-weight:500;letter-spacing:.02em">AI-ASSISTED RESEARCH CONSOLE / V1.1</small></span></div><div class="header-status"><span class="status-dot"></span> ENGINE READY&nbsp;&nbsp;|&nbsp;&nbsp; LOCAL MODE</div></div>',
+    unsafe_allow_html=True
 )
+
+app_mode = st.radio(
+    "Workspace section",
+    [
+        "Live simulation", "Benchmark analysis", "Defense reference", "Attack inspector"
+    ],
+    format_func=lambda value: {
+        "Live simulation": "◉  Live simulation",
+        "Benchmark analysis": "▦  Benchmarks",
+        "Defense reference": "◈  Defenses",
+        "Attack inspector": "⌁  Attack inspector",
+    }[value],
+    horizontal=True,
+    label_visibility="collapsed"
+)
+st.caption("Select a workspace section above. All experiment controls, results, and diagnostics stay in this single research console.")
 
 # ---------------------------------------------------------------------------
 # MODE 1: LIVE SIMULATION
 # ---------------------------------------------------------------------------
-if app_mode == "🚀 Live FL Simulation":
-    st.markdown('<div class="main-title">🚀 Interactive Federated Learning Simulation</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-title">Simulate honest and Sybil clients in real time under robust aggregation defenses.</div>', unsafe_allow_html=True)
+if app_mode == "Live simulation":
+    st.markdown('<div class="main-title">Federated learning, under pressure.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-title">Configure a network, introduce adversarial clients, and observe how aggregation responds.</div>', unsafe_allow_html=True)
 
     col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
 
     with col_cfg1:
-        st.subheader("1. Client Setup")
+        st.subheader("01 / Participants")
         num_honest = st.slider("Honest Clients (H)", min_value=2, max_value=15, value=7, step=1)
         num_sybil = st.slider("Sybil / Malicious Clients (S)", min_value=0, max_value=8, value=3, step=1)
         total_clients = num_honest + num_sybil
@@ -105,10 +134,10 @@ if app_mode == "🚀 Live FL Simulation":
         st.info(f"Total: **{total_clients}** clients | Sybil Ratio: **{sybil_pct:.1f}%**")
 
     with col_cfg2:
-        st.subheader("2. Defense Strategy")
+        st.subheader("02 / Environment")
         defense_choice = st.selectbox(
             "Aggregator Defense",
-            ["FLTrust", "ProofOfTrust", "FoolsGold", "MultiKrum", "Krum", "TrimmedMean", "CoordinateMedian", "FedAvg", "RFA"],
+            DEFENSES,
             index=0 # FLTrust default
         )
         dataset_choice = st.selectbox(
@@ -117,12 +146,13 @@ if app_mode == "🚀 Live FL Simulation":
             index=0 # Real-world fraud default
         )
         rounds = st.slider("Communication Rounds", min_value=1, max_value=15, value=5, step=1)
+        seed = st.number_input("Experiment seed", min_value=0, max_value=999999, value=42, step=1)
 
     with col_cfg3:
-        st.subheader("3. Sybil Attack Vector")
+        st.subheader("03 / Adversary")
         attack_type = st.selectbox(
             "Attack Strategy",
-            ["adaptive", "fraud_evasion", "dba", "sign_flip", "model_scale", "label_flip", "noise", "honest"],
+            ATTACKS,
             index=0
         )
         if attack_type == "adaptive":
@@ -137,9 +167,16 @@ if app_mode == "🚀 Live FL Simulation":
 
     st.markdown("---")
 
-    run_btn = st.button("▶️ Launch Simulation", type="primary", use_container_width=True)
+    run_btn = st.button("Run simulation", type="primary", use_container_width=True)
 
     if run_btn:
+        configuration_error = validate_configuration(
+            defense_choice, total_clients, num_sybil, dataset_choice, attack_type
+        )
+        if configuration_error:
+            st.error(configuration_error)
+            st.stop()
+
         progress_bar = st.progress(0.0)
         status_text = st.empty()
 
@@ -169,7 +206,8 @@ if app_mode == "🚀 Live FL Simulation":
             batch_size=64,
             local_epochs=1,
             max_samples_per_client=400,
-            device=device
+            device=device,
+            seed=int(seed)
         )
 
         # Update attack kwargs if adaptive
@@ -180,9 +218,6 @@ if app_mode == "🚀 Live FL Simulation":
             server.attack_engine.kwargs["scale"] = scale_val
 
         history_records = []
-        last_updates = []
-        last_client_ids = []
-
         def round_callback(r, metrics):
             progress = r / rounds
             progress_bar.progress(progress)
@@ -197,11 +232,15 @@ if app_mode == "🚀 Live FL Simulation":
             m_acc.metric("Global Accuracy", f"{acc:.2f}%")
             m_loss.metric("Evaluation Loss", f"{loss:.4f}")
             if is_fraud_ds:
-                m_asr.metric("Fraud Recall", f"{recall:.1f}%")
+                m_asr.metric("Fraud Recall", f"{recall:.1f}%",
+                             delta=f"F1 {metrics.get('fraud_f1', 0.0) * 100:.1f}%")
             else:
                 m_asr.metric("Attack Success Rate", f"{asr:.2f}%")
             
-            is_poisoned = (recall < 20.0 and r > 1 and num_sybil > 0) if is_fraud_ds else (acc < 25.0 and r > 1 and num_sybil > 0)
+            is_poisoned = (
+                metrics.get("fraud_asr", 0.0) > 0.8
+                if is_fraud_ds else metrics.get("attack_success_rate", 0.0) > 0.8
+            ) and r > 0 and num_sybil > 0
             if is_poisoned:
                 m_stat.metric("Defense Status", "VULNERABLE / POISONED", delta="-Attack Succeeded", delta_color="inverse")
             else:
@@ -234,14 +273,17 @@ if app_mode == "🚀 Live FL Simulation":
         st.markdown("### 🔍 Client Update Diagnostics & Sybil Detection")
         vis_col1, vis_col2 = st.columns(2)
 
-        # Retrieve last client updates
-        client_updates = []
-        client_labels = []
-        for c in clients:
-            u = c.compute_update(server.global_params)
-            client_updates.append(u)
-            label = f"Syb-{c.client_id}" if c.is_sybil else f"H-{c.client_id}"
-            client_labels.append(label)
+        # Use the exact crafted updates that were aggregated in the final round.
+        client_updates = history.get("last_updates", [])
+        client_ids = history.get("last_client_ids", [])
+        client_is_sybil = history.get("last_client_is_sybil", [])
+        client_labels = [
+            f"Syb-{cid}" if is_sybil else f"H-{cid}"
+            for cid, is_sybil in zip(client_ids, client_is_sybil)
+        ]
+        if not client_updates:
+            st.info("No client updates were recorded for diagnostics.")
+            st.stop()
 
         # 1. Cosine similarity heatmap
         with vis_col1:
@@ -252,7 +294,7 @@ if app_mode == "🚀 Live FL Simulation":
 
             fig_hm, ax_hm = plt.subplots(figsize=(6, 5), dpi=150)
             sns.heatmap(cos_matrix, xticklabels=client_labels, yticklabels=client_labels,
-                        annot=True, fmt=".2f", cmap="vlag", ax=ax_hm, cbar_kws={'label': 'Cosine Sim'})
+                        annot=True, fmt=".2f", cmap="magma", ax=ax_hm, cbar_kws={'label': 'Cosine Sim'})
             ax_hm.set_title("Pairwise Gradient Cosine Similarity")
             st.pyplot(fig_hm)
             plt.close()
@@ -265,9 +307,9 @@ if app_mode == "🚀 Live FL Simulation":
                 pca = PCA(n_components=2)
                 coords = pca.fit_transform(arr)
                 fig_pca, ax_pca = plt.subplots(figsize=(6, 5), dpi=150)
-                for idx, c in enumerate(clients):
-                    color = "#e74c3c" if c.is_sybil else "#2ecc71"
-                    marker = "X" if c.is_sybil else "o"
+                for idx, is_sybil in enumerate(client_is_sybil):
+                    color = "#ff4f9a" if is_sybil else "#64d8ff"
+                    marker = "X" if is_sybil else "o"
                     ax_pca.scatter(coords[idx, 0], coords[idx, 1], c=color, marker=marker, s=120, edgecolors="black")
                     ax_pca.annotate(client_labels[idx], (coords[idx, 0]+0.1, coords[idx, 1]+0.1), fontsize=9)
                 ax_pca.set_title("Client Updates in 2D Feature Space")
@@ -282,8 +324,8 @@ if app_mode == "🚀 Live FL Simulation":
 # ---------------------------------------------------------------------------
 # MODE 2: BENCHMARK PLOTS & ANALYSIS
 # ---------------------------------------------------------------------------
-elif app_mode == "📊 Benchmark Plots & Analysis":
-    st.markdown('<div class="main-title">📊 Benchmark Results & Experimental Analysis</div>', unsafe_allow_html=True)
+elif app_mode == "Benchmark analysis":
+    st.markdown('<div class="main-title">Benchmark analysis</div>', unsafe_allow_html=True)
     st.markdown('<div class="sub-title">Precomputed research figures and automated benchmark execution.</div>', unsafe_allow_html=True)
 
     results_dir = "./results"
@@ -319,7 +361,7 @@ elif app_mode == "📊 Benchmark Plots & Analysis":
             st.image(fig1_path, use_column_width=True)
             exp1_csv = os.path.join(results_dir, "exp1_defenses_comparison.csv")
             if os.path.exists(exp1_csv):
-                st.dataframe(pd.read_csv(exp1_csv), use_container_width=True)
+                st.dataframe(load_results_csv(exp1_csv), use_container_width=True)
         else:
             st.warning("Figure not generated yet. Click '⚡ Run Benchmarks Now' to generate it!")
 
@@ -329,7 +371,7 @@ elif app_mode == "📊 Benchmark Plots & Analysis":
             st.image(fig2_path, use_column_width=True)
             exp2_csv = os.path.join(results_dir, "exp2_sybil_scaling.csv")
             if os.path.exists(exp2_csv):
-                st.dataframe(pd.read_csv(exp2_csv), use_container_width=True)
+                st.dataframe(load_results_csv(exp2_csv), use_container_width=True)
         else:
             st.warning("Figure not generated yet. Click '⚡ Run Benchmarks Now' to generate it!")
 
@@ -339,7 +381,7 @@ elif app_mode == "📊 Benchmark Plots & Analysis":
             st.image(fig3_path, use_column_width=True)
             exp3_csv = os.path.join(results_dir, "exp3_attacks_comparison.csv")
             if os.path.exists(exp3_csv):
-                st.dataframe(pd.read_csv(exp3_csv), use_container_width=True)
+                st.dataframe(load_results_csv(exp3_csv), use_container_width=True)
         else:
             st.warning("Figure not generated yet. Click '⚡ Run Benchmarks Now' to generate it!")
 
@@ -354,8 +396,8 @@ elif app_mode == "📊 Benchmark Plots & Analysis":
 # ---------------------------------------------------------------------------
 # MODE 3: DEFENSE ALGORITHMS DEEP DIVE
 # ---------------------------------------------------------------------------
-elif app_mode == "🛡️ Defense Algorithms Deep Dive":
-    st.markdown('<div class="main-title">🛡️ Robust Aggregation Defense Reference</div>', unsafe_allow_html=True)
+elif app_mode == "Defense reference":
+    st.markdown('<div class="main-title">Defense reference</div>', unsafe_allow_html=True)
     st.markdown('<div class="sub-title">Theoretical and algorithmic analysis of Byzantine and Sybil defenses.</div>', unsafe_allow_html=True)
 
     def_cards = [
@@ -401,6 +443,28 @@ elif app_mode == "🛡️ Defense Algorithms Deep Dive":
             "mechanism": "Maintains historical gradient memory for each client and computes cosine similarity. Sybils sharing goals exhibit high mutual correlation and are penalized with near-zero aggregation weights.",
             "vulnerability": "Sensitive to feature diversity jitter where Sybils intentionally inject orthogonal noise to lower their mutual cosine similarity."
         }
+        ,
+        {
+            "name": "FLTrust (Cao et al., 2021)",
+            "type": "Trusted Root Update",
+            "breakdown_point": "Depends on root-data quality",
+            "mechanism": "Scores each client update by its positive cosine similarity with a clean server-root update, then normalizes trusted magnitudes.",
+            "vulnerability": "A weak, unrepresentative, or contaminated root dataset can produce a misleading trust direction."
+        },
+        {
+            "name": "ProofOfTrust",
+            "type": "Stake-weighted Trust",
+            "breakdown_point": "Depends on stake distribution",
+            "mechanism": "Combines update trust with client stake and reduces the influence of clients whose updates repeatedly disagree with the trusted direction.",
+            "vulnerability": "Large stake concentration can amplify a compromised identity unless stake is distributed and auditable."
+        },
+        {
+            "name": "RFA (Pillutla et al., 2019)",
+            "type": "Geometric Median",
+            "breakdown_point": "Robust geometric center",
+            "mechanism": "Uses an iterative robust geometric median to reduce the effect of extreme client updates without requiring a trusted root.",
+            "vulnerability": "Repeated high-dimensional distance calculations can be expensive and non-IID honest updates may be treated as outliers."
+        }
     ]
 
     for c in def_cards:
@@ -412,8 +476,8 @@ elif app_mode == "🛡️ Defense Algorithms Deep Dive":
 # ---------------------------------------------------------------------------
 # MODE 4: SYBIL ATTACK INSPECTOR
 # ---------------------------------------------------------------------------
-elif app_mode == "🦹 Sybil Attack Inspector":
-    st.markdown('<div class="main-title">🦹 Adaptive Sybil Attack Mechanics</div>', unsafe_allow_html=True)
+elif app_mode == "Attack inspector":
+    st.markdown('<div class="main-title">Attack inspector</div>', unsafe_allow_html=True)
     st.markdown('<div class="sub-title">How modern Sybil attacks circumvent both distance-based and cosine-based defenses.</div>', unsafe_allow_html=True)
 
     st.markdown(r"""
